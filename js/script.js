@@ -25,13 +25,12 @@
     });
   }
 
-  function languageInPath(pathname) {
-    var match = String(pathname || "").match(/(?:^|\/)(pt|en|fr)(?:\/|$)/i);
-    return match ? match[1].toLowerCase() : "";
-  }
-
   function detectActiveLanguage(pathname) {
-    return languageInPath(pathname) || "pt";
+    if (pathname === "/" || pathname === "") return "pt";
+    if (pathname.indexOf("/pt") === 0) return "pt";
+    if (pathname.indexOf("/en") === 0) return "en";
+    if (pathname.indexOf("/fr") === 0) return "fr";
+    return "pt";
   }
 
   function initLanguageSelector() {
@@ -43,7 +42,9 @@
         var lang = (link.getAttribute("data-lang") || "").toLowerCase();
         if (!lang) {
           var href = link.getAttribute("href") || "";
-          lang = languageInPath(href);
+          if (href.indexOf("/en/") === 0) lang = "en";
+          else if (href.indexOf("/fr/") === 0) lang = "fr";
+          else if (href.indexOf("/pt/") === 0) lang = "pt";
         }
         link.classList.toggle("is-active", lang === activeLang);
       });
