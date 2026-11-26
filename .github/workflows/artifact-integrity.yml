@@ -1,5 +1,13 @@
 name: Artifact integrity
 
+# Bootstrap check. This pull_request workflow runs from the pull request's own
+# tree, so it is NOT a trust anchor: it exists only to satisfy the currently
+# required "Validate artifact" context for the bootstrap release PR, which is
+# protected by an independent human approval. The trust anchor for every later
+# pull request is artifact-integrity-trusted.yml (pull_request_target, policy
+# pinned to the base commit). Retire this workflow once branch protection
+# requires the trusted check instead (separate founder authorization).
+
 on:
   pull_request:
     branches: [main]
@@ -27,6 +35,8 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+      - name: Test artifact path and exposure policy
+        run: node .github/scripts/test-artifact-policy.mjs "$GITHUB_WORKSPACE"
       - name: Install checksum-pinned Gitleaks
         run: |
           curl --fail --silent --show-error --location \

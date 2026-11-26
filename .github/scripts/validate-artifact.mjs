@@ -3,12 +3,22 @@ import { createHash } from 'node:crypto';
 import { appendFileSync, lstatSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, extname, join, normalize, relative, resolve, sep } from 'node:path';
 
-const root = resolve(process.argv[2] ?? process.cwd());
-const allowlistFile = join(root, '.github/artifact-allowlist.txt');
+// Usage: validate-artifact.mjs <candidate-root> [--policy-root <trusted-root>]
+// The candidate root is treated strictly as data. When --policy-root is given,
+// the allowlist is read from the trusted policy checkout instead of the candidate.
+const args = process.argv.slice(2);
+const policyFlag = args.indexOf('--policy-root');
+const policyRoot = policyFlag >= 0 ? resolve(args[policyFlag + 1] ?? '') : null;
+const positional = args.filter((_, index) => policyFlag < 0 || (index !== policyFlag && index !== policyFlag + 1));
+const root = resolve(positional[0] ?? process.cwd());
+const allowlistFile = join(policyRoot ?? root, '.github/artifact-allowlist.txt');
 const expectedMetadata = new Set([
-  '.github/artifact-allowlist.txt',
   '.github/CODEOWNERS',
+  '.github/artifact-allowlist.txt',
+  '.github/scripts/test-artifact-policy.mjs',
+  '.github/scripts/trusted-check.mjs',
   '.github/scripts/validate-artifact.mjs',
+  '.github/workflows/artifact-integrity-trusted.yml',
   '.github/workflows/artifact-integrity.yml',
 ]);
 const approvedExtensions = new Set(['.html', '.css', '.js', '.png', '.txt', '.xml']);
@@ -89,6 +99,13 @@ function checkContent(sitePaths, allPaths) {
     for (const { label, pattern } of credentialPatterns) {
       if (pattern.test(content)) fail(`${label} pattern found in ${path}`);
     }
+    if (sitePaths.includes(path)) {
+      let decoded = content;
+      try { decoded = decodeURIComponent(content.replace(/%(?![0-9a-f]{2})/gi, '%25')); } catch { /* keep raw */ }
+      if (/\/biugacademy-site(?=[\/"'\s?#)\\]|$)/im.test(content) || /\/biugacademy-site(?=[\/"'\s?#)\\]|$)/im.test(decoded)) {
+        fail(`obsolete GitHub project-page prefix text found in ${path}`);
+      }
+    }
     if (sitePaths.includes(path) && /\b(?:backend\/server\.js|node_modules\/|DATABASE_URL)\b/i.test(content)) {
       fail(`backend implementation/configuration marker found in ${path}`);
     }
@@ -96,15 +113,9 @@ function checkContent(sitePaths, allPaths) {
 }
 
 function normalizedPathname(raw, sourcePath) {
-  const basePrefix = '/biugacademy-site';
+  const obsoleteProjectPrefix = '/biugacademy-site';
   if (raw.startsWith('//')) return null;
-  if (raw.startsWith('/')) {
-    if (raw !== basePrefix && !raw.startsWith(`${basePrefix}/`)) {
-      fail(`root-relative path is not project-path-aware in ${sourcePath}: ${raw}`);
-      return null;
-    }
-    raw = raw.slice(basePrefix.length) || '/';
-  } else {
+  if (!raw.startsWith('/')) {
     raw = new URL(raw, `https://artifact.invalid/${dirname(sourcePath).replaceAll('\\', '/')}/`).pathname;
   }
   let pathname;
@@ -115,7 +126,12 @@ function normalizedPathname(raw, sourcePath) {
     return null;
   }
   if (!pathname.startsWith('/')) pathname = `/${pathname}`;
-  return normalize(pathname).replaceAll('\\', '/');
+  const normalized = normalize(pathname).replaceAll('\\', '/');
+  if (normalized === obsoleteProjectPrefix || normalized.startsWith(`${obsoleteProjectPrefix}/`)) {
+    fail(`obsolete GitHub project-page prefix in ${sourcePath}: ${raw}`);
+    return null;
+  }
+  return normalized;
 }
 
 function resolveSiteFile(pathname, siteSet) {
@@ -134,7 +150,16 @@ function checkReference(raw, sourcePath, siteSet) {
   if (/^[a-z][a-z\d+.-]*:/i.test(value)) {
     const url = new URL(value);
     if (['biugacademy.org', 'www.biugacademy.org'].includes(url.hostname)) {
-      if (!resolveSiteFile(decodeURIComponent(url.pathname), siteSet)) {
+      let pathname;
+      try {
+        pathname = normalize(decodeURIComponent(url.pathname)).replaceAll('\\', '/');
+      } catch {
+        fail(`invalid percent-encoding in canonical Academy route from ${sourcePath}: ${value}`);
+        return;
+      }
+      if (pathname === '/biugacademy-site' || pathname.startsWith('/biugacademy-site/')) {
+        fail(`obsolete GitHub project-page prefix in ${sourcePath}: ${value}`);
+      } else if (!resolveSiteFile(pathname, siteSet)) {
         fail(`canonical Academy route does not exist in the artifact from ${sourcePath}: ${value}`);
       }
     }
@@ -184,16 +209,17 @@ function checkManifest(sitePaths) {
   const digest = sha256(first);
   const report = `Artifact integrity validation\n\n- Site files: ${sitePaths.length}\n- Canonical manifest SHA-256: \`${digest}\`\n- Manifest generation: reproducible\n- Metadata files excluded from the public site inventory: ${expectedMetadata.size}\n`;
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, report);
-  process.stdout.write(`PASS: ${sitePaths.length} allowlisted files; reproducible manifest ${digest}\n`);
+  return { count: sitePaths.length, digest };
 }
 
+let manifest = null;
 try {
   const sitePaths = readAllowlist();
   const allPaths = walk(root);
   checkInventory(sitePaths);
   checkContent(sitePaths, allPaths);
   checkLinks(sitePaths);
-  checkManifest(sitePaths);
+  manifest = checkManifest(sitePaths);
 } catch (error) {
   fail(error instanceof Error ? error.message : String(error));
 }
@@ -202,6 +228,7 @@ if (errors.length) {
   process.stderr.write(`FAIL: ${errors.length} artifact policy violation(s)\n`);
   for (const error of errors) process.stderr.write(`- ${error}\n`);
   process.exitCode = 1;
-} else if (warnings.length) {
+} else {
   for (const warning of warnings) process.stdout.write(`WARN: ${warning}\n`);
+  process.stdout.write(`PASS: ${manifest.count} allowlisted files; reproducible manifest ${manifest.digest}\n`);
 }

@@ -1,2 +1,2 @@
-# Validation policy changes require review by the repository owner.
-/.github/ @fabiogmassanga
+# Validation policy changes require review by an independent code owner.
+/.github/ @joseqalberto @fabiogmassanga
