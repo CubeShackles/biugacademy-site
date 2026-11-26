@@ -1,0 +1,68 @@
+name: Artifact integrity (trusted)
+
+# Trusted check. pull_request_target always loads THIS workflow file from the
+# base branch, never from the pull request. The policy (validator, allowlist,
+# this workflow) is checked out at the immutable base commit SHA; the pull
+# request head is checked out separately and treated as data only. No
+# candidate code is executed, no secrets are referenced, the token is
+# read-only and credentials are never persisted to disk.
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: artifact-integrity-trusted-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  trusted:
+    name: Validate artifact (trusted)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    env:
+      GITLEAKS_VERSION: 8.30.1
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+      TRUSTED_POLICY_SHA: ${{ github.event.pull_request.base.sha }}
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Check out trusted policy at the immutable base commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+          persist-credentials: false
+      - name: Check out candidate pull request head as data only
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: candidate
+          persist-credentials: false
+      - name: Record trusted and candidate commits
+        run: |
+          echo "Trusted policy commit: $TRUSTED_POLICY_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "Candidate head commit: $CANDIDATE_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+          test "$(git -C trusted rev-parse HEAD)" = "$TRUSTED_POLICY_SHA"
+          test "$(git -C candidate rev-parse HEAD)" = "$CANDIDATE_SHA"
+      - name: Install checksum-pinned Gitleaks
+        run: |
+          curl --fail --silent --show-error --location \
+            -o "$RUNNER_TEMP/gitleaks.tgz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tgz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP" gitleaks
+      - name: Scan candidate files for secrets (default rules, candidate config ignored)
+        run: |
+          printf '' > "$RUNNER_TEMP/empty-gitleaksignore"
+          printf '[extend]\nuseDefault = true\n' > "$RUNNER_TEMP/gitleaks-default.toml"
+          "$RUNNER_TEMP/gitleaks" dir --redact --no-banner --verbose \
+            --config "$RUNNER_TEMP/gitleaks-default.toml" \
+            --gitleaks-ignore-path "$RUNNER_TEMP/empty-gitleaksignore" \
+            "$GITHUB_WORKSPACE/candidate"
+      - name: Run trusted validator against candidate data
+        run: node trusted/.github/scripts/trusted-check.mjs --policy "$GITHUB_WORKSPACE/trusted" --candidate "$GITHUB_WORKSPACE/candidate"
