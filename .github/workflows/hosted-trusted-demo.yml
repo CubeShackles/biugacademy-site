@@ -1,0 +1,60 @@
+name: Hosted trusted-check demonstration (control branch only)
+
+# Throwaway harness for the P0 negative/positive controls. pull_request_target
+# workflows are sourced only from the default branch (GitHub change effective
+# 2025-12-08), so the trusted job in PR #1 cannot run before PR #1 merges.
+# This harness runs the SAME trusted steps on a hosted runner: policy is
+# checked out at the pinned PR #1 head commit (immutable SHA below), the
+# control branch head is checked out separately as data, and only the pinned
+# policy's trusted-check.mjs is executed. The harness file itself is removed
+# from the candidate copy before the check so it does not count as a policy
+# change. Never merge this file.
+on:
+  push:
+    branches: ['test/trusted-check-negative', 'test/trusted-check-positive']
+
+permissions:
+  contents: read
+
+jobs:
+  demo:
+    name: Trusted check demo (pinned policy 53b514a)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      TRUSTED_POLICY_SHA: 53b514ad4e1bdca8d932be39d56b2a4348d59b40
+      CANDIDATE_SHA: ${{ github.sha }}
+      GITLEAKS_VERSION: 8.30.1
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: 53b514ad4e1bdca8d932be39d56b2a4348d59b40
+          path: trusted
+          persist-credentials: false
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          path: candidate
+          persist-credentials: false
+      - name: Record commits and drop the harness file from the candidate copy
+        run: |
+          test "$(git -C trusted rev-parse HEAD)" = "$TRUSTED_POLICY_SHA"
+          test "$(git -C candidate rev-parse HEAD)" = "$CANDIDATE_SHA"
+          echo "Trusted policy commit: $TRUSTED_POLICY_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "Candidate head commit: $CANDIDATE_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+          rm candidate/.github/workflows/hosted-trusted-demo.yml
+      - name: Install checksum-pinned Gitleaks
+        run: |
+          curl --fail --silent --show-error --location -o "$RUNNER_TEMP/gitleaks.tgz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tgz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP" gitleaks
+      - name: Scan candidate files for secrets
+        run: |
+          printf '' > "$RUNNER_TEMP/empty-gitleaksignore"
+          printf '[extend]\nuseDefault = true\n' > "$RUNNER_TEMP/gitleaks-default.toml"
+          "$RUNNER_TEMP/gitleaks" dir --redact --no-banner --verbose --config "$RUNNER_TEMP/gitleaks-default.toml" \
+            --gitleaks-ignore-path "$RUNNER_TEMP/empty-gitleaksignore" "$GITHUB_WORKSPACE/candidate"
+      - name: Run pinned trusted check against candidate data
+        run: node trusted/.github/scripts/trusted-check.mjs --policy "$GITHUB_WORKSPACE/trusted" --candidate "$GITHUB_WORKSPACE/candidate"
