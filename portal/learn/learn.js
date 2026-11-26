@@ -148,17 +148,17 @@ async function api(path, options) {
   return { ok: response.ok, status: response.status, data };
 }
 
-// Signed-in users on the demo see one short line. Nothing internal (service
+// Signed-in users in the learning sandbox see one short line. Nothing internal (service
 // status, tool configuration, policy notes) is shown on screen.
 function notice(status) {
   if (!state.account || !status || !status.synthetic_demo) return null;
   return h(
     "p",
-    { class: "demo-note", id: "status-banner" },
+    { class: "sandbox-note", id: "status-banner" },
     text(
-      "Ambiente de demonstração com dados sintéticos.",
-      "Demo environment with synthetic data.",
-      "Environnement de démonstration avec des données fictives."
+      "Ambiente de pré-lançamento com dados sintéticos.",
+      "Prelaunch learning sandbox; synthetic data only.",
+      "Aperçu de pré-lancement avec des données fictives."
     )
   );
 }
@@ -227,7 +227,7 @@ function renderLogin() {
       text("Área de aprendizagem", "Learning area", "Espace d’apprentissage")
     ),
     state.status && state.status.synthetic_demo
-      ? h("span", { class: "pill off" }, text("Demonstração", "Demo", "Démonstration"))
+      ? h("span", { class: "pill off" }, text("Pré-lançamento", "Preview", "Aperçu"))
       : null,
     renderError(),
     form,
